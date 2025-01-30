@@ -1,4 +1,9 @@
-﻿# char-lcd
+### node-red-dashboard-2-ui-lcd
+We implemented this project in [node-red-dashboard-2-ui-lcd](https://github.com/DPSoftware-Foundation/node-red-dashboard-2-ui-lcd) for Node-Red dashboard 2.
+
+![image](https://github.com/user-attachments/assets/84bb3deb-3cfd-4416-9ca0-a62014f6f85c)
+
+# char-lcd
 
 [![npm](https://img.shields.io/npm/v/char-lcd.svg)](https://www.npmjs.com/package/char-lcd)
 
