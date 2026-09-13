@@ -109,6 +109,13 @@ default: 16;
 - `off`: character pixel off color (background); default: #cd2;
 - `on`: character pixel on color; default: #143;
 - `transitionDuration`: character pixel transition duration; default: 100ms;
+- `backlight`: backlight state, `true` or `false`; default: true;
+- `dim`: brightness of the display when the backlight is off, from 0 (black) to 1 (no change); default: 0.4;
+- `contrast`: contrast, from 0 to 1, like the contrast potentiometer on the real module; default: 0.5;  
+at 0.5 the `on`/`off` colors are shown as is; lower values fade the text out,
+higher values make the unlit 5x8 character blocks visible, and at 1 the blocks are fully dark;
+- `block`: color of the unlit pixels at maximum contrast;
+default: the `on` color for dark-on-light displays, or `#000` for light-on-dark (e.g. blue) displays;
 
 Unlike the real hardware where only certain combinations of `rows`/`cols` exist, there are no restrictions in the simulator;
 
@@ -126,3 +133,19 @@ In real hardware, only first 8 characters can be changed, but there is no such l
 
 ##### clear()
 `lcd.clear();` - clear all characters in LCD.
+
+##### backlight(on)
+`lcd.backlight(on);` - turn the backlight on (`true`) or off (`false`).  
+`lcd.backlight();` - return the current backlight state.
+
+##### contrast(k)
+`lcd.contrast(k);` - set the contrast to `k` (from 0 to 1).  
+`lcd.contrast();` - return the current contrast.
+
+```js
+// blue display with visible character blocks
+var lcd = new CharLCD({ at: 'lcd', off: '#2f46f0', on: '#dde3f2', contrast: 0.6 });
+lcd.text(0, 0, 'Hello LCD!');
+lcd.backlight(false); // display goes dark
+lcd.backlight(!lcd.backlight()); // toggle
+```

@@ -28,7 +28,10 @@ function CharLCD(obj) {
       brk: 1,
       off: '#cd2',
       on: '#143',
-      transitionDuration: '100ms'
+      transitionDuration: '100ms',
+      backlight: true,
+      contrast: 0.5,
+      dim: 0.4
     },
     previousState: [],
   };
@@ -42,13 +45,34 @@ function CharLCD(obj) {
     }
     if (obj.rom && obj.rom.toString().toLowerCase() == 'eu') _.rom = _eu;
   }
+  _.arg.backlight = !!_.arg.backlight;
+  _.arg.contrast = unit(_.arg.contrast, 0.5);
+  _.arg.dim = unit(_.arg.dim, 0.4);
+  _.dur = ms(_.arg.transitionDuration);
+  _.light = _.arg.backlight ? 1 : 0;
+  _.rgb = { off: rgba(_.arg.off), on: rgba(_.arg.on) };
+  // unlit pixels fade toward this color as the contrast goes up
+  if (typeof _.arg.block != 'undefined') _.rgb.block = rgba(_.arg.block);
+  else _.rgb.block = luma(_.rgb.on) > luma(_.rgb.off) ? BLACK : _.rgb.on;
   create(_);
-  
+
   this.set = function(r, c, data) { set(_, r, c, data); };
   this.char = function(r, c, ch) { char(_, r, c, ch); };
   this.text = function(r, c, str) { text(_, r, c, str); };
   this.font = function(n, data) { font(_, n, data); };
   this.clear = function() { clear(_); };
+  this.backlight = function(on) {
+    if (typeof on == 'undefined') return _.arg.backlight;
+    _.arg.backlight = !!on;
+    wake(_);
+  };
+  this.contrast = function(k) {
+    if (typeof k == 'undefined') return _.arg.contrast;
+    _.arg.contrast = unit(k, _.arg.contrast);
+    ramp(_);
+    _.full = true;
+    wake(_);
+  };
 }
 
 function create(_) {
@@ -67,41 +91,198 @@ function create(_) {
 }
 
 function createAt(_) {
-  var r, c, rr, cc, x, y, pix;
+  var r, c, rr, cc, x, y, k;
   var cell = _.arg.pix + _.arg.brk;
   var HH = _.arg.large ? CL : CH;
+  var w = cell * ((1 + CW) * _.arg.cols + 1) + _.arg.brk;
+  var h = cell * ((1 + HH) * _.arg.rows + 1) + _.arg.brk;
+  var dpr = (typeof window != 'undefined' && window.devicePixelRatio) || 1;
+  var n = _.arg.rows * _.arg.cols * CH * CW;
 
   var lcd = document.createElement('div');
   lcd.style.position = 'relative';
   lcd.style.display = 'inline-block';
-  lcd.style.width = cell * ((1 + CW) * _.arg.cols + 1) + _.arg.brk + 'px';
-  lcd.style.height = cell * ((1 + HH) * _.arg.rows + 1) + _.arg.brk + 'px';
-  lcd.style.backgroundColor = _.arg.off;
-  _.pix = [];
+  lcd.style.width = w + 'px';
+  lcd.style.height = h + 'px';
+  // a single canvas instead of a DOM element per pixel
+  var cv = document.createElement('canvas');
+  cv.width = Math.round(w * dpr);
+  cv.height = Math.round(h * dpr);
+  cv.style.display = 'block';
+  cv.style.width = w + 'px';
+  cv.style.height = h + 'px';
+  lcd.appendChild(cv);
+  _.lcd = lcd;
+  _.cv = cv;
+  _.cx = cv.getContext ? cv.getContext('2d') : null;
+  _.bit = new Uint8Array(n); // target state
+  _.lvl = new Float32Array(n); // displayed state, fades toward the target
+  _.inq = new Uint8Array(n);
+  _.act = [];
+  _.rect = new Int32Array(4 * n); // x, y, w, h in device pixels
+  _.bkt = [];
+  for (k = 0; k <= Q; k++) _.bkt.push([]);
   _.txt = [];
 
+  k = 0;
   for (r = 0; r < _.arg.rows; r++) {
     for (c = 0; c < _.arg.cols; c++) {
       for (rr = 0; rr < CH; rr++) {
         for (cc = 0; cc < CW; cc++) {
           x = cell * ((1 + CW) * c + 1 + cc) + _.arg.brk;
           y = cell * ((1 + HH) * r + 1 + rr) + _.arg.brk;
-          pix = document.createElement('div');
-          pix.style.position = 'absolute';
-          pix.style.display = 'inline-block';
-          pix.style.top = y + 'px';
-          pix.style.left = x + 'px';
-          pix.style.width = _.arg.pix + 'px';
-          pix.style.height = _.arg.pix + 'px';
-          pix.style.backgroundColor = _.arg.off;
-          pix.style.transition = `background-color ${_.arg.transitionDuration} ease-in-out`;
-          _.pix.push(pix);
-          lcd.appendChild(pix);
+          _.rect[k] = Math.round(x * dpr);
+          _.rect[k + 1] = Math.round(y * dpr);
+          _.rect[k + 2] = Math.round((x + _.arg.pix) * dpr) - _.rect[k];
+          _.rect[k + 3] = Math.round((y + _.arg.pix) * dpr) - _.rect[k + 1];
+          k += 4;
         }
       }
     }
   }
   _.arg.at.appendChild(lcd);
+  ramp(_);
+  draw(_, null);
+}
+
+var Q = 64; // color steps used while a pixel fades
+var BLACK = [0, 0, 0, 1];
+
+// contrast 0.5 shows the plain on/off colors;
+// lower fades the lit pixels out, higher makes the unlit character blocks show up
+function ramp(_) {
+  var k = _.arg.contrast;
+  var b = _.arg.dim + (1 - _.arg.dim) * _.light;
+  var bg = mix(BLACK, _.rgb.off, b);
+  var on = mix(BLACK, mix(_.rgb.off, _.rgb.on, 2 * k), b);
+  var off = mix(BLACK, mix(_.rgb.off, _.rgb.block, 2 * k - 1), b);
+  _.bg = css(bg);
+  _.ramp = [];
+  for (var q = 0; q <= Q; q++) _.ramp.push(css(mix(off, on, q / Q)));
+  _.opaque = on[3] == 1 && off[3] == 1;
+}
+
+// redraw the listed pixels, or everything if list is null
+function draw(_, list) {
+  var cx = _.cx;
+  if (!cx) return;
+  var rect = _.rect;
+  var bkt = _.bkt;
+  var n = list ? list.length : _.lvl.length;
+  var i, k, q, v;
+  if (!list) {
+    cx.clearRect(0, 0, _.cv.width, _.cv.height);
+    cx.fillStyle = _.bg;
+    cx.fillRect(0, 0, _.cv.width, _.cv.height);
+  }
+  else if (!_.opaque) {
+    cx.fillStyle = _.bg;
+    for (k = 0; k < n; k++) {
+      i = 4 * list[k];
+      cx.clearRect(rect[i], rect[i + 1], rect[i + 2], rect[i + 3]);
+      cx.fillRect(rect[i], rect[i + 1], rect[i + 2], rect[i + 3]);
+    }
+  }
+  for (q = 0; q <= Q; q++) bkt[q].length = 0;
+  for (k = 0; k < n; k++) {
+    i = list ? list[k] : k;
+    v = _.lvl[i];
+    bkt[Math.round(v * v * (3 - 2 * v) * Q)].push(i);
+  }
+  for (q = 0; q <= Q; q++) {
+    if (!bkt[q].length) continue;
+    cx.fillStyle = _.ramp[q];
+    cx.beginPath();
+    for (k = 0; k < bkt[q].length; k++) {
+      i = 4 * bkt[q][k];
+      cx.rect(rect[i], rect[i + 1], rect[i + 2], rect[i + 3]);
+    }
+    cx.fill();
+  }
+}
+
+var raf = typeof requestAnimationFrame == 'function' ?
+  function(f) { return requestAnimationFrame(f); } :
+  function(f) { return setTimeout(function() { f(Date.now()); }, 16); };
+
+function wake(_) {
+  if (!_.raf) _.raf = raf(function(now) { tick(_, now); });
+}
+
+function tick(_, now) {
+  var i, k, v;
+  var dt = _.last ? Math.max(now - _.last, 0) : 16;
+  var step = _.dur > 0 ? dt / _.dur : 1;
+  var light = _.arg.backlight ? 1 : 0;
+  var full = _.full;
+  var act = _.act;
+  var keep = [];
+  _.raf = 0;
+  _.last = now;
+  _.full = false;
+  if (_.light != light) {
+    _.light = toward(_.light, light, step);
+    ramp(_);
+    full = true;
+  }
+  for (k = 0; k < act.length; k++) {
+    i = act[k];
+    v = toward(_.lvl[i], _.bit[i], step);
+    _.lvl[i] = v;
+    if (v == _.bit[i]) _.inq[i] = 0;
+    else keep.push(i);
+  }
+  _.act = keep;
+  draw(_, full ? null : act);
+  if (keep.length || _.light != light) wake(_);
+  else _.last = 0;
+}
+
+function toward(v, t, s) {
+  return v < t ? Math.min(v + s, t) : Math.max(v - s, t);
+}
+
+function ms(d) {
+  var m = String(d).match(/^\s*([\d.]+)\s*(ms|s)?\s*$/i);
+  if (!m) return 0;
+  return parseFloat(m[1]) * (m[2] && m[2].toLowerCase() == 's' ? 1000 : 1);
+}
+
+function unit(x, def) {
+  x = parseFloat(x);
+  if (isNaN(x)) return def;
+  return x < 0 ? 0 : x > 1 ? 1 : x;
+}
+
+var probe;
+// any CSS color to [r, g, b, a]; invalid colors come out transparent, like in CSS
+function rgba(c) {
+  if (typeof probe == 'undefined') {
+    try { probe = document.createElement('canvas').getContext('2d', { willReadFrequently: true }); }
+    catch(e) { probe = null; }
+  }
+  if (!probe) return [0, 0, 0, 0];
+  probe.clearRect(0, 0, 1, 1);
+  probe.fillStyle = 'transparent';
+  probe.fillStyle = String(c);
+  probe.fillRect(0, 0, 1, 1);
+  var d = probe.getImageData(0, 0, 1, 1).data;
+  return [d[0], d[1], d[2], d[3] / 255];
+}
+
+function mix(a, b, t) {
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  var z = [];
+  for (var i = 0; i < 4; i++) z.push(a[i] + (b[i] - a[i]) * t);
+  return z;
+}
+
+function css(x) {
+  return 'rgba(' + Math.round(x[0]) + ',' + Math.round(x[1]) + ',' + Math.round(x[2]) + ',' + Math.round(x[3] * 1000) / 1000 + ')';
+}
+
+function luma(x) {
+  return 0.299 * x[0] + 0.587 * x[1] + 0.114 * x[2];
 }
 
 function set(_, r, c, data) {
@@ -111,10 +292,19 @@ function set(_, r, c, data) {
   for (var i = 0; i < CH; i++) {
     var mask = (data[i] == parseInt(data[i])) ? parseInt(data[i]) : 0;
     for (var j = 0; j < CW; j++) {
-      _.pix[offset + CW - j].style.backgroundColor = ((1 << j) & mask) ? _.arg.on : _.arg.off;
+      var k = offset + CW - j;
+      var bit = ((1 << j) & mask) ? 1 : 0;
+      if (_.bit[k] != bit) {
+        _.bit[k] = bit;
+        if (!_.inq[k]) {
+          _.inq[k] = 1;
+          _.act.push(k);
+        }
+      }
     }
     offset += CW;
   }
+  if (_.act.length) wake(_);
 }
 
 function char(_, r, c, ch) {

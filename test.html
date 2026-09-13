@@ -27,6 +27,14 @@
   <h1>LCD With Blur Effect</h1>
   <span id="blur_lcd"></span>
 
+  <h1>Backlight and Contrast</h1>
+  <div><span id="real_lcd"></span></div>
+  <div><span id="real_lcd_green"></span></div>
+  <p>
+    <button id="backlight_btn">Backlight: ON</button>
+    <label>Contrast <input id="contrast_rng" type="range" min="0" max="1" step="0.01" value="0.6"> <span id="contrast_val">0.60</span></label>
+  </p>
+
   <script>
     var i, j;
     var lcd0 = new CharLCD({ at: 'lcd0', rows: 1, cols: 1, off: '#fff', on: '#f00' });
@@ -101,6 +109,24 @@
     
     // Start the text update loop
     updateLCDText();
+
+    // backlight and contrast test
+    var lcdBlue = new CharLCD({ at: 'real_lcd', rows: 2, cols: 16, pix: 4, off: '#2f46f0', on: '#dde3f2', contrast: 0.6, transitionDuration: '200ms' });
+    var lcdGreen = new CharLCD({ at: 'real_lcd_green', rows: 2, cols: 16, pix: 4, contrast: 0.6, transitionDuration: '200ms' });
+    lcdBlue.text(0, 0, '  Welcome ALL\nAllNewStep.com');
+    lcdGreen.text(0, 0, '  Welcome ALL\nAllNewStep.com');
+
+    document.getElementById('backlight_btn').onclick = function() {
+      var on = !lcdBlue.backlight();
+      lcdBlue.backlight(on);
+      lcdGreen.backlight(on);
+      this.textContent = 'Backlight: ' + (on ? 'ON' : 'OFF');
+    };
+    document.getElementById('contrast_rng').oninput = function() {
+      lcdBlue.contrast(this.value);
+      lcdGreen.contrast(this.value);
+      document.getElementById('contrast_val').textContent = lcdBlue.contrast().toFixed(2);
+    };
 
   </script>
 </body>
