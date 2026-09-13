@@ -9,6 +9,7 @@
   else {
     if (!global) global = window;
     global.CharLCD = factory();
+    global.GraphicLCD = global.CharLCD.GraphicLCD;
   }
 })(this, function() {
 ////////////////////////////
@@ -16,14 +17,50 @@
 var CW = 5;
 var CH = 8;
 var CL = 10;
+var Q = 255; // color steps, one per pixel level
+var BLACK = [0, 0, 0, 1];
 
 function CharLCD(obj) {
+  var _ = init({ rows: 2, cols: 16 }, obj);
+  charLayout(_);
+  create(_);
+
+  this.set = function(r, c, data) { set(_, r, c, data); };
+  this.char = function(r, c, ch) { char(_, r, c, ch); };
+  this.text = function(r, c, str) { text(_, r, c, str); };
+  this.font = function(n, data) { font(_, n, data); };
+  this.clear = function() { fill(_, 0); };
+  common(this, _);
+}
+
+function GraphicLCD(obj) {
+  var _ = init({ width: 128, height: 64, grayscale: false }, obj);
+  _.arg.grayscale = !!_.arg.grayscale;
+  graphicLayout(_);
+  create(_);
+
+  this.pixel = function(x, y, v) { plot(_, Math.round(x), Math.round(y), level(_, v)); };
+  this.get = function(x, y) { return get(_, x, y); };
+  this.fill = function(v) { fill(_, level(_, v)); };
+  this.clear = function() { fill(_, 0); };
+  this.line = function(x0, y0, x1, y1, v) { drawLine(_, x0, y0, x1, y1, level(_, v)); };
+  this.rect = function(x, y, w, h, v) { drawRect(_, x, y, w, h, level(_, v), false); };
+  this.fillRect = function(x, y, w, h, v) { drawRect(_, x, y, w, h, level(_, v), true); };
+  this.circle = function(x, y, r, v) { drawCircle(_, x, y, r, level(_, v), false); };
+  this.fillCircle = function(x, y, r, v) { drawCircle(_, x, y, r, level(_, v), true); };
+  this.text = function(x, y, str, v, bg) { drawText(_, x, y, str, level(_, v), bg == null ? -1 : level(_, bg)); };
+  this.bitmap = function(x, y, w, h, data) { drawBitmap(_, x, y, w, h, data); };
+  this.font = function(n, data) { font(_, n, data); };
+  common(this, _);
+}
+
+// options shared by both displays, plus the display specific defaults
+function init(defaults, obj) {
+  var key;
   var _ = {
     font: {},
     rom: _jp,
     arg: {
-      rows: 2,
-      cols: 16,
       pix: 3,
       brk: 1,
       off: '#cd2',
@@ -32,12 +69,11 @@ function CharLCD(obj) {
       backlight: true,
       contrast: 0.5,
       dim: 0.4
-    },
-    previousState: [],
+    }
   };
-
+  for (key in defaults) _.arg[key] = defaults[key];
   if (obj) {
-    for (var key in obj) {
+    for (key in obj) {
       if (typeof _.arg[key] != 'undefined' && _.arg[key] == parseInt(_.arg[key])) {
         if (obj[key] == parseInt(obj[key]) && obj[key] > 0) _.arg[key] = parseInt(obj[key]);
       }
@@ -48,64 +84,69 @@ function CharLCD(obj) {
   _.arg.backlight = !!_.arg.backlight;
   _.arg.contrast = unit(_.arg.contrast, 0.5);
   _.arg.dim = unit(_.arg.dim, 0.4);
+  // not in the defaults above: 1 would make it an integer-only option
+  _.arg.bright = unit(_.arg.bright, 1);
   _.dur = ms(_.arg.transitionDuration);
-  _.light = _.arg.backlight ? 1 : 0;
-  _.rgb = { off: rgba(_.arg.off), on: rgba(_.arg.on) };
-  // unlit pixels fade toward this color as the contrast goes up
-  if (typeof _.arg.block != 'undefined') _.rgb.block = rgba(_.arg.block);
-  else _.rgb.block = luma(_.rgb.on) > luma(_.rgb.off) ? BLACK : _.rgb.on;
-  create(_);
+  palette(_);
+  return _;
+}
 
-  this.set = function(r, c, data) { set(_, r, c, data); };
-  this.char = function(r, c, ch) { char(_, r, c, ch); };
-  this.text = function(r, c, str) { text(_, r, c, str); };
-  this.font = function(n, data) { font(_, n, data); };
-  this.clear = function() { clear(_); };
-  this.backlight = function(on) {
+// methods shared by both displays
+function common(self, _) {
+  self.backlight = function(on) {
     if (typeof on == 'undefined') return _.arg.backlight;
     _.arg.backlight = !!on;
-    wake(_);
+    repaint(_);
   };
-  this.contrast = function(k) {
+  self.contrast = function(k) {
     if (typeof k == 'undefined') return _.arg.contrast;
     _.arg.contrast = unit(k, _.arg.contrast);
-    ramp(_);
-    _.full = true;
-    wake(_);
+    repaint(_);
+  };
+  self.bright = function(k) {
+    if (typeof k == 'undefined') return _.arg.bright;
+    _.arg.bright = unit(k, _.arg.bright);
+    repaint(_);
+  };
+  self.dim = function(k) {
+    if (typeof k == 'undefined') return _.arg.dim;
+    _.arg.dim = unit(k, _.arg.dim);
+    repaint(_);
+  };
+  self.colors = function(c) {
+    if (!c) return { off: _.arg.off, on: _.arg.on, block: _.arg.block };
+    ['off', 'on', 'block'].forEach(function(key) {
+      if (typeof c[key] != 'undefined') _.arg[key] = c[key];
+    });
+    palette(_);
+    repaint(_);
   };
 }
 
 function create(_) {
-  if (typeof _.arg.at == 'string') _.arg.at = document.getElementById(_.arg.at);
-  if (_.arg.at) {
-    try {
-      createAt(_);
-      return;
-    }
-    catch(e) {/**/}
+  var at = typeof _.arg.at == 'string' ? document.getElementById(_.arg.at) : _.arg.at;
+  try {
+    at.appendChild(_.lcd);
   }
-  var bottom = document.createElement('div');
-  document.body.appendChild(bottom);
-  _.arg.at = bottom;
-  createAt(_);
+  catch(e) {
+    at = document.createElement('div');
+    document.body.appendChild(at);
+    at.appendChild(_.lcd);
+  }
+  _.arg.at = at;
+  ramp(_);
+  draw(_, null);
 }
 
-function createAt(_) {
-  var r, c, rr, cc, x, y, k;
-  var cell = _.arg.pix + _.arg.brk;
-  var HH = _.arg.large ? CL : CH;
-  var w = cell * ((1 + CW) * _.arg.cols + 1) + _.arg.brk;
-  var h = cell * ((1 + HH) * _.arg.rows + 1) + _.arg.brk;
+// a single canvas instead of a DOM element per pixel
+function panel(_, w, h, n) {
   var dpr = (typeof window != 'undefined' && window.devicePixelRatio) || 1;
-  var n = _.arg.rows * _.arg.cols * CH * CW;
-
   var lcd = document.createElement('div');
+  var cv = document.createElement('canvas');
   lcd.style.position = 'relative';
   lcd.style.display = 'inline-block';
   lcd.style.width = w + 'px';
   lcd.style.height = h + 'px';
-  // a single canvas instead of a DOM element per pixel
-  var cv = document.createElement('canvas');
   cv.width = Math.round(w * dpr);
   cv.height = Math.round(h * dpr);
   cv.style.display = 'block';
@@ -115,44 +156,66 @@ function createAt(_) {
   _.lcd = lcd;
   _.cv = cv;
   _.cx = cv.getContext ? cv.getContext('2d') : null;
-  _.bit = new Uint8Array(n); // target state
-  _.lvl = new Float32Array(n); // displayed state, fades toward the target
+  _.dpr = dpr;
+  _.val = new Uint8Array(n); // target level, 0-255
+  _.lvl = new Float32Array(n); // displayed level, 0-1, fades toward the target
   _.inq = new Uint8Array(n);
   _.act = [];
   _.rect = new Int32Array(4 * n); // x, y, w, h in device pixels
   _.bkt = [];
-  for (k = 0; k <= Q; k++) _.bkt.push([]);
-  _.txt = [];
+  for (var q = 0; q <= Q; q++) _.bkt.push([]);
+}
 
-  k = 0;
+// position of the k-th pixel, in CSS pixels
+function place(_, k, x, y) {
+  var i = 4 * k;
+  _.rect[i] = Math.round(x * _.dpr);
+  _.rect[i + 1] = Math.round(y * _.dpr);
+  _.rect[i + 2] = Math.round((x + _.arg.pix) * _.dpr) - _.rect[i];
+  _.rect[i + 3] = Math.round((y + _.arg.pix) * _.dpr) - _.rect[i + 1];
+}
+
+function charLayout(_) {
+  var r, c, rr, cc;
+  var k = 0;
+  var cell = _.arg.pix + _.arg.brk;
+  var HH = _.arg.large ? CL : CH;
+  panel(_, cell * ((1 + CW) * _.arg.cols + 1) + _.arg.brk, cell * ((1 + HH) * _.arg.rows + 1) + _.arg.brk, _.arg.rows * _.arg.cols * CH * CW);
   for (r = 0; r < _.arg.rows; r++) {
     for (c = 0; c < _.arg.cols; c++) {
       for (rr = 0; rr < CH; rr++) {
         for (cc = 0; cc < CW; cc++) {
-          x = cell * ((1 + CW) * c + 1 + cc) + _.arg.brk;
-          y = cell * ((1 + HH) * r + 1 + rr) + _.arg.brk;
-          _.rect[k] = Math.round(x * dpr);
-          _.rect[k + 1] = Math.round(y * dpr);
-          _.rect[k + 2] = Math.round((x + _.arg.pix) * dpr) - _.rect[k];
-          _.rect[k + 3] = Math.round((y + _.arg.pix) * dpr) - _.rect[k + 1];
-          k += 4;
+          place(_, k++, cell * ((1 + CW) * c + 1 + cc) + _.arg.brk, cell * ((1 + HH) * r + 1 + rr) + _.arg.brk);
         }
       }
     }
   }
-  _.arg.at.appendChild(lcd);
-  ramp(_);
-  draw(_, null);
 }
 
-var Q = 64; // color steps used while a pixel fades
-var BLACK = [0, 0, 0, 1];
+function graphicLayout(_) {
+  var x, y;
+  var cell = _.arg.pix + _.arg.brk;
+  var W = _.arg.width;
+  var H = _.arg.height;
+  // one cell of margin around the matrix
+  panel(_, cell * (W + 2) + _.arg.brk, cell * (H + 2) + _.arg.brk, W * H);
+  for (y = 0; y < H; y++) {
+    for (x = 0; x < W; x++) place(_, y * W + x, cell * (1 + x) + _.arg.brk, cell * (1 + y) + _.arg.brk);
+  }
+}
+
+// unlit pixels fade toward the block color as the contrast goes up
+function palette(_) {
+  _.rgb = { off: rgba(_.arg.off), on: rgba(_.arg.on) };
+  if (_.arg.block != null) _.rgb.block = rgba(_.arg.block);
+  else _.rgb.block = luma(_.rgb.on) > luma(_.rgb.off) ? BLACK : _.rgb.on;
+}
 
 // contrast 0.5 shows the plain on/off colors;
-// lower fades the lit pixels out, higher makes the unlit character blocks show up
+// lower fades the lit pixels out, higher makes the unlit pixels show up
 function ramp(_) {
   var k = _.arg.contrast;
-  var b = _.arg.dim + (1 - _.arg.dim) * _.light;
+  var b = _.arg.backlight ? _.arg.bright : _.arg.dim;
   var bg = mix(BLACK, _.rgb.off, b);
   var on = mix(BLACK, mix(_.rgb.off, _.rgb.on, 2 * k), b);
   var off = mix(BLACK, mix(_.rgb.off, _.rgb.block, 2 * k - 1), b);
@@ -169,7 +232,7 @@ function draw(_, list) {
   var rect = _.rect;
   var bkt = _.bkt;
   var n = list ? list.length : _.lvl.length;
-  var i, k, q, v;
+  var i, k, q;
   if (!list) {
     cx.clearRect(0, 0, _.cv.width, _.cv.height);
     cx.fillStyle = _.bg;
@@ -186,8 +249,7 @@ function draw(_, list) {
   for (q = 0; q <= Q; q++) bkt[q].length = 0;
   for (k = 0; k < n; k++) {
     i = list ? list[k] : k;
-    v = _.lvl[i];
-    bkt[Math.round(v * v * (3 - 2 * v) * Q)].push(i);
+    bkt[Math.round(_.lvl[i] * Q)].push(i);
   }
   for (q = 0; q <= Q; q++) {
     if (!bkt[q].length) continue;
@@ -209,37 +271,53 @@ function wake(_) {
   if (!_.raf) _.raf = raf(function(now) { tick(_, now); });
 }
 
+// new colors for every pixel on the next frame, no fade
+function repaint(_) {
+  _.full = true;
+  wake(_);
+}
+
 function tick(_, now) {
-  var i, k, v;
+  var i, k, t, v;
   var dt = _.last ? Math.max(now - _.last, 0) : 16;
   var step = _.dur > 0 ? dt / _.dur : 1;
-  var light = _.arg.backlight ? 1 : 0;
   var full = _.full;
   var act = _.act;
   var keep = [];
   _.raf = 0;
   _.last = now;
   _.full = false;
-  if (_.light != light) {
-    _.light = toward(_.light, light, step);
-    ramp(_);
-    full = true;
-  }
+  if (full) ramp(_);
   for (k = 0; k < act.length; k++) {
     i = act[k];
-    v = toward(_.lvl[i], _.bit[i], step);
+    t = _.val[i] / 255;
+    v = toward(_.lvl[i], t, step);
     _.lvl[i] = v;
-    if (v == _.bit[i]) _.inq[i] = 0;
+    if (v == t) _.inq[i] = 0;
     else keep.push(i);
   }
   _.act = keep;
   draw(_, full ? null : act);
-  if (keep.length || _.light != light) wake(_);
+  if (keep.length) wake(_);
   else _.last = 0;
 }
 
 function toward(v, t, s) {
   return v < t ? Math.min(v + s, t) : Math.max(v - s, t);
+}
+
+// set the target level of the k-th pixel; the next frame starts fading it
+function put(_, k, v) {
+  if (_.val[k] == v) return;
+  _.val[k] = v;
+  if (_.inq[k]) return;
+  _.inq[k] = 1;
+  _.act.push(k);
+  wake(_);
+}
+
+function fill(_, v) {
+  for (var k = 0; k < _.val.length; k++) put(_, k, v);
 }
 
 function ms(d) {
@@ -285,6 +363,9 @@ function luma(x) {
   return 0.299 * x[0] + 0.587 * x[1] + 0.114 * x[2];
 }
 
+////////////////////////////
+// CharLCD
+
 function set(_, r, c, data) {
   if (r != parseInt(r) || r < 0 || r >= _.arg.rows || c != parseInt(c) || c < 0 || c >= _.arg.cols) return;
   if (!data) data = [];
@@ -292,56 +373,55 @@ function set(_, r, c, data) {
   for (var i = 0; i < CH; i++) {
     var mask = (data[i] == parseInt(data[i])) ? parseInt(data[i]) : 0;
     for (var j = 0; j < CW; j++) {
-      var k = offset + CW - j;
-      var bit = ((1 << j) & mask) ? 1 : 0;
-      if (_.bit[k] != bit) {
-        _.bit[k] = bit;
-        if (!_.inq[k]) {
-          _.inq[k] = 1;
-          _.act.push(k);
-        }
-      }
+      put(_, offset + CW - j, ((1 << j) & mask) ? 255 : 0);
     }
     offset += CW;
   }
-  if (_.act.length) wake(_);
+}
+
+function glyph(_, x) {
+  return _.font[x] ? _.font[x] : _.rom.font[x];
 }
 
 function char(_, r, c, ch) {
-  var x = ch.charCodeAt(0);
-  set(_, r, c, _.font[x] ? _.font[x] : _.rom.font[x]);
+  set(_, r, c, glyph(_, ch.charCodeAt(0)));
+}
+
+// string to ROM character codes; -1 is a line break
+function bytes(_, str) {
+  var out = [];
+  var i, k, x;
+  str = String(str);
+  for (i = 0; i < str.length; i++) {
+    if (str[i] == '\n') {
+      out.push(-1);
+      continue;
+    }
+    x = str.charCodeAt(i);
+    if (x >= 0xd800 && x <= 0xdbff) {
+      i++;
+      k = str[i] ? str.charCodeAt(i) : 0;
+      x = 0x10000 + (x - 0xd800) * 0x400 + (k - 0xdc00);
+    }
+    if (_.rom.cmap[x]) x = _.rom.cmap[x];
+    if (x instanceof Array) {
+      for (k = 0; k < x.length; k++) out.push(x[k]);
+    }
+    else out.push(x > 255 ? 0x3f : x);
+  }
+  return out;
 }
 
 function text(_, r, c, str) {
   if (r != parseInt(r) || r < 0 || r >= _.arg.rows || c != parseInt(c) || c < 0 || c >= _.arg.cols) return;
-  var i, k, x;
-  for (i = 0; i < str.length; i++) {
-    if (str[i] == '\n') {
+  var b = bytes(_, str);
+  for (var i = 0; i < b.length; i++) {
+    if (b[i] < 0) {
       c = 0;
       r++;
       if (r >= _.arg.rows) return;
     }
-    else {
-      x = str.charCodeAt(i);
-      if (x >= 0xd800 && x <= 0xdbff) {
-        i++;
-        k = str[i] ? str.charCodeAt(i) : 0;
-        x = 0x10000 + (x - 0xd800) * 0x400 + (k - 0xdc00);
-      }
-      if (c >= _.arg.cols) continue;
-      if (_.rom.cmap[x]) x = _.rom.cmap[x];
-      if (x instanceof Array) {
-        for (k = 0; k < x.length; k++) {
-          char(_, r, c, String.fromCharCode(x[k]));
-          c++;
-        }
-      }
-      else {
-        if (x > 255) x = 0x3f;
-        char(_, r, c, String.fromCharCode(x));
-        c++;
-      }
-    }
+    else set(_, r, c++, glyph(_, b[i]));
   }
 }
 
@@ -349,10 +429,213 @@ function font(_, n, data) {
   _.font[n] = data;
 }
 
-function clear(_) {
-  for (var r = 0; r < _.arg.rows; r++) {
-    for (var c = 0; c < _.arg.cols; c++) {
-      set(_, r, c, []);
+////////////////////////////
+// GraphicLCD
+
+// drawing value to pixel level: any non-zero is on, or 0-255 in grayscale mode
+function level(_, v) {
+  if (typeof v == 'undefined' || v === true) return 255;
+  if (!_.arg.grayscale) return v ? 255 : 0;
+  v = Math.round(v);
+  return v > 255 ? 255 : v > 0 ? v : 0;
+}
+
+function get(_, x, y) {
+  var v;
+  x = Math.round(x);
+  y = Math.round(y);
+  if (!(x >= 0 && x < _.arg.width && y >= 0 && y < _.arg.height)) return 0;
+  v = _.val[y * _.arg.width + x];
+  return _.arg.grayscale ? v : v ? 1 : 0;
+}
+
+// x and y must be integers
+function plot(_, x, y, v) {
+  if (x >= 0 && x < _.arg.width && y >= 0 && y < _.arg.height) put(_, y * _.arg.width + x, v);
+}
+
+function hline(_, x0, x1, y, v) {
+  if (!(y >= 0 && y < _.arg.height)) return;
+  var a = Math.max(x0, 0);
+  var b = Math.min(x1, _.arg.width - 1);
+  for (var x = a; x <= b; x++) put(_, y * _.arg.width + x, v);
+}
+
+// Liang-Barsky: the part of the line inside the box, or undefined if none
+function clip(x0, y0, x1, y1, xmin, ymin, xmax, ymax) {
+  var i, t;
+  var t0 = 0;
+  var t1 = 1;
+  var dx = x1 - x0;
+  var dy = y1 - y0;
+  var p = [-dx, dx, -dy, dy];
+  var q = [x0 - xmin, xmax - x0, y0 - ymin, ymax - y0];
+  for (i = 0; i < 4; i++) {
+    if (p[i] == 0) {
+      if (q[i] < 0) return;
+      continue;
+    }
+    t = q[i] / p[i];
+    if (p[i] < 0) {
+      if (t > t1) return;
+      if (t > t0) t0 = t;
+    }
+    else {
+      if (t < t0) return;
+      if (t < t1) t1 = t;
+    }
+  }
+  return [x0 + t0 * dx, y0 + t0 * dy, x0 + t1 * dx, y0 + t1 * dy];
+}
+
+function drawLine(_, x0, y0, x1, y1, v) {
+  var dx, dy, sx, sy, err, e2, c;
+  x0 = Math.round(x0);
+  y0 = Math.round(y0);
+  x1 = Math.round(x1);
+  y1 = Math.round(y1);
+  if (!isFinite(x0 + y0 + x1 + y1)) return;
+  // cut very long lines to the display, stepping through huge coordinates would freeze the page
+  if (Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)) > 2 * (_.arg.width + _.arg.height)) {
+    c = clip(x0, y0, x1, y1, -1, -1, _.arg.width, _.arg.height);
+    if (!c) return;
+    x0 = Math.round(c[0]);
+    y0 = Math.round(c[1]);
+    x1 = Math.round(c[2]);
+    y1 = Math.round(c[3]);
+  }
+  dx = Math.abs(x1 - x0);
+  dy = -Math.abs(y1 - y0);
+  sx = x0 < x1 ? 1 : -1;
+  sy = y0 < y1 ? 1 : -1;
+  err = dx + dy;
+  for (;;) {
+    plot(_, x0, y0, v);
+    if (x0 == x1 && y0 == y1) return;
+    e2 = 2 * err;
+    if (e2 >= dy) {
+      err += dy;
+      x0 += sx;
+    }
+    if (e2 <= dx) {
+      err += dx;
+      y0 += sy;
+    }
+  }
+}
+
+function drawRect(_, x, y, w, h, v, filled) {
+  var j, j0, j1;
+  x = Math.round(x);
+  y = Math.round(y);
+  w = Math.round(w);
+  h = Math.round(h);
+  if (!isFinite(x + y) || !(w > 0 && h > 0)) return;
+  j0 = Math.max(y, 0);
+  j1 = Math.min(y + h - 1, _.arg.height - 1);
+  if (filled) {
+    for (j = j0; j <= j1; j++) hline(_, x, x + w - 1, j, v);
+    return;
+  }
+  hline(_, x, x + w - 1, y, v);
+  hline(_, x, x + w - 1, y + h - 1, v);
+  for (j = j0; j <= j1; j++) {
+    plot(_, x, j, v);
+    plot(_, x + w - 1, j, v);
+  }
+}
+
+function drawCircle(_, x0, y0, r, v, filled) {
+  var x, y, err;
+  var W = _.arg.width;
+  var H = _.arg.height;
+  x0 = Math.round(x0);
+  y0 = Math.round(y0);
+  r = Math.round(r);
+  if (!isFinite(x0 + y0 + r) || r < 0) return;
+  if (r > 2 * (W + H)) {
+    // much bigger than the display: only visit the visible rows and columns
+    for (y = Math.max(y0 - r, 0); y <= Math.min(y0 + r, H - 1); y++) {
+      x = Math.round(Math.sqrt(r * r - (y - y0) * (y - y0)));
+      if (filled) hline(_, x0 - x, x0 + x, y, v);
+      else {
+        plot(_, x0 - x, y, v);
+        plot(_, x0 + x, y, v);
+      }
+    }
+    if (filled) return;
+    for (x = Math.max(x0 - r, 0); x <= Math.min(x0 + r, W - 1); x++) {
+      y = Math.round(Math.sqrt(r * r - (x - x0) * (x - x0)));
+      plot(_, x, y0 - y, v);
+      plot(_, x, y0 + y, v);
+    }
+    return;
+  }
+  x = r;
+  y = 0;
+  err = 1 - r;
+  while (x >= y) {
+    if (filled) {
+      hline(_, x0 - x, x0 + x, y0 + y, v);
+      hline(_, x0 - x, x0 + x, y0 - y, v);
+      hline(_, x0 - y, x0 + y, y0 + x, v);
+      hline(_, x0 - y, x0 + y, y0 - x, v);
+    }
+    else {
+      plot(_, x0 + x, y0 + y, v);
+      plot(_, x0 - x, y0 + y, v);
+      plot(_, x0 + x, y0 - y, v);
+      plot(_, x0 - x, y0 - y, v);
+      plot(_, x0 + y, y0 + x, v);
+      plot(_, x0 - y, y0 + x, v);
+      plot(_, x0 + y, y0 - x, v);
+      plot(_, x0 - y, y0 - x, v);
+    }
+    y++;
+    if (err < 0) err += 2 * y + 1;
+    else {
+      x--;
+      err += 2 * (y - x) + 1;
+    }
+  }
+}
+
+// ROM font text, 6x9 pixels per character; bg < 0 leaves the background as is
+function drawText(_, x, y, str, v, bg) {
+  var b = bytes(_, str);
+  var i, rr, cc, data, mask, x0;
+  x = Math.round(x);
+  y = Math.round(y);
+  if (!isFinite(x + y)) return;
+  x0 = x;
+  for (i = 0; i < b.length; i++) {
+    if (b[i] < 0) {
+      x = x0;
+      y += CH + 1;
+      continue;
+    }
+    if (bg >= 0) drawRect(_, x, y, CW + 1, CH + 1, bg, true);
+    data = glyph(_, b[i]) || [];
+    for (rr = 0; rr < CH; rr++) {
+      mask = (data[rr] == parseInt(data[rr])) ? parseInt(data[rr]) : 0;
+      for (cc = 0; cc < CW; cc++) {
+        if (mask & (1 << (CW - 1 - cc))) plot(_, x + cc, y + rr, v);
+      }
+    }
+    x += CW + 1;
+  }
+}
+
+// data: w * h values, row by row; null or undefined values are skipped
+function drawBitmap(_, x, y, w, h, data) {
+  var i, j, d;
+  x = Math.round(x);
+  y = Math.round(y);
+  if (!isFinite(x + y) || !data) return;
+  for (j = Math.max(0, -y); j < Math.min(h, _.arg.height - y); j++) {
+    for (i = Math.max(0, -x); i < Math.min(w, _.arg.width - x); i++) {
+      d = data[j * w + i];
+      if (d != null) plot(_, x + i, y + j, level(_, d));
     }
   }
 }
@@ -886,5 +1169,6 @@ var _eu = {
 };
 
 ////////////////////////////
+  CharLCD.GraphicLCD = GraphicLCD;
   return CharLCD;
 });

@@ -30,9 +30,18 @@
   <h1>Backlight and Contrast</h1>
   <div><span id="real_lcd"></span></div>
   <div><span id="real_lcd_green"></span></div>
+
+  <h1>GraphicLCD</h1>
+  <div><span id="glcd"></span> <span id="glcd_gray"></span></div>
+
+  <h1>Controls (for the LCDs above)</h1>
   <p>
     <button id="backlight_btn">Backlight: ON</button>
     <label>Contrast <input id="contrast_rng" type="range" min="0" max="1" step="0.01" value="0.6"> <span id="contrast_val">0.60</span></label>
+  </p>
+  <p>
+    <label>Blue LCDs backlight color <input id="off_color" type="color" value="#2f46f0"></label>
+    <label>Blue LCDs pixel color <input id="on_color" type="color" value="#dde3f2"></label>
   </p>
 
   <script>
@@ -113,19 +122,62 @@
     // backlight and contrast test
     var lcdBlue = new CharLCD({ at: 'real_lcd', rows: 2, cols: 16, pix: 4, off: '#2f46f0', on: '#dde3f2', contrast: 0.6, transitionDuration: '200ms' });
     var lcdGreen = new CharLCD({ at: 'real_lcd_green', rows: 2, cols: 16, pix: 4, contrast: 0.6, transitionDuration: '200ms' });
-    lcdBlue.text(0, 0, '  Welcome ALL\nAllNewStep.com');
-    lcdGreen.text(0, 0, '  Welcome ALL\nAllNewStep.com');
+    lcdBlue.text(0, 0, '  Hello World!');
+    lcdGreen.text(0, 0, '  Hello World!');
 
+    // graphic LCD test
+    var x, shade = [];
+    var glcd = new GraphicLCD({ at: 'glcd', width: 128, height: 64, contrast: 0.6 });
+    var gray = new GraphicLCD({ at: 'glcd_gray', width: 128, height: 64, grayscale: true, off: '#2f46f0', on: '#dde3f2', contrast: 0.6 });
+    glcd.rect(0, 0, 128, 64);
+    glcd.text(3, 3, 'GraphicLCD');
+    glcd.line(0, 12, 127, 12);
+    glcd.circle(16, 36, 10);
+    glcd.fillRect(32, 26, 20, 20);
+    glcd.rect(56, 26, 20, 20);
+    glcd.line(56, 26, 75, 45);
+    glcd.text(82, 16, 'ABC\nabc\n123', 1, 0);
+
+    for (x = 0; x < 128; x++) gray.line(x, 0, x, 11, x * 2);
+    gray.fillCircle(20, 38, 18, 255);
+    gray.fillCircle(20, 38, 12, 150);
+    gray.fillCircle(20, 38, 6, 60);
+    gray.text(46, 16, 'Grayscale', 255);
+    gray.text(46, 26, '0-255', 120);
+    for (j = 0; j < 20; j++) {
+      for (i = 0; i < 64; i++) shade.push(Math.max(0, 255 - Math.round(Math.hypot(i - 32, (j - 10) * 3) * 7)));
+    }
+    gray.bitmap(46, 40, 64, 20, shade);
+
+    // bouncing ball, the fade leaves a short trail like a slow LCD
+    var ball = { x: 110, y: 30, dx: 1, dy: 1 };
+    setInterval(function() {
+      glcd.fillCircle(ball.x, ball.y, 3, 0);
+      if (ball.x + ball.dx < 104 || ball.x + ball.dx > 123) ball.dx = -ball.dx;
+      if (ball.y + ball.dy < 17 || ball.y + ball.dy > 59) ball.dy = -ball.dy;
+      ball.x += ball.dx;
+      ball.y += ball.dy;
+      glcd.fillCircle(ball.x, ball.y, 3);
+    }, 40);
+
+    var demos = [lcdBlue, lcdGreen, glcd, gray];
     document.getElementById('backlight_btn').onclick = function() {
       var on = !lcdBlue.backlight();
-      lcdBlue.backlight(on);
-      lcdGreen.backlight(on);
+      demos.forEach(function(l) { l.backlight(on); });
       this.textContent = 'Backlight: ' + (on ? 'ON' : 'OFF');
     };
     document.getElementById('contrast_rng').oninput = function() {
-      lcdBlue.contrast(this.value);
-      lcdGreen.contrast(this.value);
+      var value = this.value;
+      demos.forEach(function(l) { l.contrast(value); });
       document.getElementById('contrast_val').textContent = lcdBlue.contrast().toFixed(2);
+    };
+    document.getElementById('off_color').oninput = function() {
+      lcdBlue.colors({ off: this.value });
+      gray.colors({ off: this.value });
+    };
+    document.getElementById('on_color').oninput = function() {
+      lcdBlue.colors({ on: this.value });
+      gray.colors({ on: this.value });
     };
 
   </script>
